@@ -1,0 +1,40 @@
+name: Bootstrap source tree from base64
+
+on:
+  push:
+    paths:
+      - source-payload.tar.gz.b64
+
+permissions:
+  contents: write
+
+jobs:
+  unpack-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decode and unpack verified source payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode source-payload.tar.gz.b64 > source-payload.tar.gz
+          tar -tzf source-payload.tar.gz | while IFS= read -r path; do
+            case "$path" in
+              /*|../*|*/../*|*/..) echo "Unsafe archive path: $path" >&2; exit 1 ;;
+            esac
+          done
+          tar -xzf source-payload.tar.gz
+          rm source-payload.tar.gz source-payload.tar.gz.b64
+          rm .github/workflows/bootstrap-source.yml
+          rm .github/workflows/bootstrap-source-b64.yml
+
+      - name: Commit source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: publish complete macOS and Windows source"
+          git push
