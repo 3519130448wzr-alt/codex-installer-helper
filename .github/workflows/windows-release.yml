@@ -13,7 +13,6 @@ jobs:
     runs-on: windows-2025
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
-      PFX_PATH: ${{ runner.temp }}\codex-installer-signing.pfx
       WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
       WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
@@ -47,6 +46,8 @@ jobs:
 
       - name: Import signing certificate
         shell: pwsh
+        env:
+          PFX_PATH: ${{ runner.temp }}\codex-installer-signing.pfx
         run: |
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PFX_BASE64) -or
               [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD) -or
@@ -57,6 +58,8 @@ jobs:
 
       - name: Authenticode sign and timestamp
         shell: pwsh
+        env:
+          PFX_PATH: ${{ runner.temp }}\codex-installer-signing.pfx
         run: |
           $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
             Sort-Object FullName |
@@ -108,4 +111,6 @@ jobs:
       - name: Remove signing certificate
         if: always()
         shell: pwsh
+        env:
+          PFX_PATH: ${{ runner.temp }}\codex-installer-signing.pfx
         run: Remove-Item -Force -ErrorAction SilentlyContinue $env:PFX_PATH
