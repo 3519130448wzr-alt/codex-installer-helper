@@ -1,0 +1,111 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-sign:
+    runs-on: windows-2025
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      PFX_PATH: ${{ runner.temp }}\codex-installer-signing.pfx
+      WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_TAG=$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Test
+        shell: pwsh
+        run: windows\scripts\test.ps1
+
+      - name: Security check
+        shell: pwsh
+        run: windows\scripts\security-check.ps1
+
+      - name: Build x64 and ARM64 single-file executables
+        shell: pwsh
+        run: |
+          windows\scripts\build.ps1 -Runtime win-x64 -Version $env:VERSION
+          windows\scripts\build.ps1 -Runtime win-arm64 -Version $env:VERSION
+
+      - name: Import signing certificate
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PFX_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_TIMESTAMP_URL)) {
+            throw "Public Windows releases require a PFX certificate, password, and RFC 3161 timestamp URL."
+          }
+          [IO.File]::WriteAllBytes($env:PFX_PATH, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX_BASE64))
+
+      - name: Authenticode sign and timestamp
+        shell: pwsh
+        run: |
+          $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName |
+            Select-Object -Last 1 -ExpandProperty FullName
+          if (-not $signTool) { throw "signtool.exe was not found." }
+          $artifacts = Get-ChildItem "build\windows\Codex-Installer-Helper-$env:VERSION-windows-*.exe"
+          foreach ($artifact in $artifacts) {
+            & $signTool sign /fd SHA256 /td SHA256 /tr $env:WINDOWS_TIMESTAMP_URL /f $env:PFX_PATH /p $env:WINDOWS_CERTIFICATE_PASSWORD $artifact.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Verify signatures and create checksums
+        shell: pwsh
+        run: |
+          $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName |
+            Select-Object -Last 1 -ExpandProperty FullName
+          $artifacts = Get-ChildItem "build\windows\Codex-Installer-Helper-$env:VERSION-windows-*.exe"
+          if ($artifacts.Count -ne 2) { throw "Expected two architecture-specific executables." }
+          foreach ($artifact in $artifacts) {
+            & $signTool verify /pa /v $artifact.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $signature = Get-AuthenticodeSignature -FilePath $artifact.FullName
+            if ($signature.Status -ne "Valid") { throw "Invalid Authenticode signature: $($artifact.Name)" }
+            $hash = (Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($artifact.Name)" | Set-Content -NoNewline -Encoding ascii "$($artifact.FullName).sha256"
+          }
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $arguments = @("release", "create", $env:RELEASE_TAG, "--verify-tag", "--generate-notes")
+            if ($env:RELEASE_TAG.Contains("-")) { $arguments += "--prerelease" }
+            & gh @arguments
+            if ($LASTEXITCODE -ne 0) {
+              gh release view $env:RELEASE_TAG *> $null
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+          $releaseFiles = Get-ChildItem build\windows\*.exe, build\windows\*.sha256 |
+            Select-Object -ExpandProperty FullName
+          gh release upload $env:RELEASE_TAG @releaseFiles --clobber
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Remove signing certificate
+        if: always()
+        shell: pwsh
+        run: Remove-Item -Force -ErrorAction SilentlyContinue $env:PFX_PATH
