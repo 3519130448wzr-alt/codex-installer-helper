@@ -1,0 +1,11 @@
+/.build/
+/build/
+/windows/**/bin/
+/windows/**/obj/
+/.swiftpm/
+/*.xcuserstate
+.DS_Store
+*.p12
+*.pfx
+*.p8
+*.keychain-db
