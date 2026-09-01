@@ -26,8 +26,6 @@ jobs:
           done
           tar -xzf source-payload.tar.gz
           rm source-payload.tar.gz source-payload.tar.gz.b64
-          rm .github/workflows/bootstrap-source.yml
-          rm .github/workflows/bootstrap-source-b64.yml
 
       - name: Commit source tree
         shell: bash
